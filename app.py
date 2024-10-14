@@ -60,7 +60,7 @@ company_internal_csv = st.file_uploader("Upload Internal Delivery Properties (CS
 company_remove_csv = st.file_uploader("Upload Properties to Remove (CSV)", type=["csv"])
 
 # Process button (visible only if all files are uploaded)
-if all([devzones_gpkg, lat_lon_csv, fcc_internal_csv, fcc_remove_csv]):
+if all([devzones_gpkg, lat_lon_csv, company_internal_csv, company_remove_csv]):
     if st.button("Process Data"):
         # Load files into dataframes
         sf_zones, lat_lon_data, company_internal_data, company_remove_data = load_files(
