@@ -27,7 +27,7 @@ def process_data(sf_zones, lat_lon_data, company_remove_data):
     sf_prop_assigned = gpd.sjoin(sf_prop, sf_zones, how="left", op="within")
 
     # Filter out properties that should be removed
-    properties_to_remove = comapny_remove_data["property_code_assigned"].unique()
+    properties_to_remove = company_remove_data["property_code_assigned"].unique()
     sf_prop_assigned = sf_prop_assigned[
         ~sf_prop_assigned["property_code_assigned"].isin(properties_to_remove)
     ]
