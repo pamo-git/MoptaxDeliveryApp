@@ -1,3 +1,6 @@
 streamlit
 pandas
 geopandas
+GoogleAuth
+GoogleDrive
+os
