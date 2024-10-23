@@ -1,46 +1,21 @@
-# MOPTAX RDN Delivery - Streamlit App with Google Drive Integration
+# MOPTAX RDN Delivery - Streamlit App
 import streamlit as st
 import pandas as pd
 import geopandas as gpd
-from pydrive2.auth import GoogleAuth
-from pydrive2.drive import GoogleDrive
 import os
+import shutil
+from io import BytesIO
+from zipfile import ZipFile
 
-# ------------------------ Google Drive Authentication ------------------------
+# ------------------------ Function Definitions ------------------------
 
-def authenticate_drive():
-    """Authenticate Google Drive using service account credentials."""
-    gauth = GoogleAuth()
-    gauth.LoadCredentialsFile("service_account.json")  # Upload your service account JSON
-    if gauth.credentials is None:
-        st.error("Service account authentication failed.")
-        return None
-    return GoogleDrive(gauth)
-
-# ------------------------ File Manipulation on Google Drive ------------------------
-
-def list_drive_files(drive, folder_id):
-    """List all PDF files in the given Google Drive folder."""
-    file_list = drive.ListFile({'q': f"'{folder_id}' in parents and mimeType='application/pdf'"}).GetList()
-    return {f['title']: f['id'] for f in file_list}
-
-def create_drive_folder(drive, parent_id, folder_name):
-    """Create a new folder on Google Drive."""
-    folder = drive.CreateFile({
-        'title': folder_name,
-        'mimeType': 'application/vnd.google-apps.folder',
-        'parents': [{'id': parent_id}]
-    })
-    folder.Upload()
-    return folder['id']
-
-def move_file_to_folder(drive, file_id, new_folder_id):
-    """Move a file to the specified folder on Google Drive."""
-    file = drive.CreateFile({'id': file_id})
-    file['parents'] = [{'id': new_folder_id}]
-    file.Upload()
-
-# ------------------------ Data Processing ------------------------
+def load_files(devzones, lat_lon, company_internal, company_remove):
+    """Load uploaded files into dataframes and return them."""
+    sf_zones = gpd.read_file(devzones).rename(columns={"Delivery.Zone": "Distr_code"}).to_crs(4326)
+    lat_lon_data = pd.read_csv(lat_lon)
+    company_internal_data = pd.read_csv(company_internal)
+    company_remove_data = pd.read_csv(company_remove)
+    return sf_zones, lat_lon_data, company_internal_data, company_remove_data
 
 def process_data(sf_zones, lat_lon_data, company_remove_data):
     """Process property data by performing spatial joins and filtering."""
@@ -51,6 +26,7 @@ def process_data(sf_zones, lat_lon_data, company_remove_data):
     )
 
     sf_prop_assigned = gpd.sjoin(sf_prop, sf_zones, how="left", op="within")
+
     properties_to_remove = company_remove_data["property_code_assigned"].unique()
     sf_prop_assigned = sf_prop_assigned[
         ~sf_prop_assigned["property_code_assigned"].isin(properties_to_remove)
@@ -58,83 +34,87 @@ def process_data(sf_zones, lat_lon_data, company_remove_data):
 
     return sf_prop_assigned.drop(columns="geometry")
 
+def download_google_drive_folder(link, download_dir="rdn_files"):
+    """Download files from a Google Drive folder link (requires gdown)."""
+    if not os.path.exists(download_dir):
+        os.makedirs(download_dir)
+    
+    # This command assumes you have `gdown` installed and available.
+    # Replace with the appropriate Google Drive API solution if needed.
+    os.system(f"gdown --folder {link} -O {download_dir}")
+    return download_dir
+
+def sort_files_into_folders(processed_data, download_dir):
+    """Sort and group files into folders based on processed data."""
+    grouped_dir = "grouped_files"
+    os.makedirs(grouped_dir, exist_ok=True)
+
+    for _, row in processed_data.iterrows():
+        # Create folder path based on delivery zone
+        folder_path = os.path.join(grouped_dir, row["Distr_code"])
+        os.makedirs(folder_path, exist_ok=True)
+
+        # Find the corresponding RDN file in the download directory
+        rdn_filename = f"{row['property_code_assigned']}.pdf"  # Assumes RDNs are named with property code
+        src_file = os.path.join(download_dir, rdn_filename)
+
+        if os.path.exists(src_file):
+            shutil.copy(src_file, folder_path)
+
+    return grouped_dir
+
+def zip_grouped_folders(grouped_dir):
+    """Zip the grouped folders for download."""
+    zip_buffer = BytesIO()
+    with ZipFile(zip_buffer, "w") as zf:
+        for root, _, files in os.walk(grouped_dir):
+            for file in files:
+                zf.write(os.path.join(root, file), arcname=os.path.relpath(os.path.join(root, file), grouped_dir))
+    zip_buffer.seek(0)
+    return zip_buffer
+
 # ------------------------ Streamlit UI Layout ------------------------
 
-# Set page configuration
-st.set_page_config(page_title="MOPTAX RDN Delivery", page_icon="📦", layout="wide")
+st.title("MOPTAX RDN Delivery")
 
-# Header section with a modern title
-st.markdown(
-    """
-    <style>
-    .title {
-        font-size: 42px;
-        font-weight: bold;
-        text-align: center;
-        color: #FF4B4B;
-    }
-    </style>
-    <div class="title">📦 MOPTAX RDN Delivery System</div>
-    """, 
-    unsafe_allow_html=True
-)
-st.write("A modern solution for organizing and managing RDN files for efficient delivery.")
+st.subheader("Step 1: Upload Required Files")
+devzones_gpkg = st.file_uploader("Upload Delivery Zones (GeoPackage)", type=["gpkg"])
+lat_lon_csv = st.file_uploader("Upload Latitude/Longitude Data (CSV)", type=["csv"])
+company_internal_csv = st.file_uploader("Upload Internal Delivery Properties (CSV)", type=["csv"])
+company_remove_csv = st.file_uploader("Upload Properties to Remove (CSV)", type=["csv"])
 
-# Sidebar for uploads and inputs
-with st.sidebar:
-    st.header("Upload Required Files")
-    devzones_gpkg = st.file_uploader("📍 Delivery Zones (GeoPackage)", type=["gpkg"])
-    lat_lon_csv = st.file_uploader("📋 Latitude/Longitude Data (CSV)", type=["csv"])
-    company_internal_csv = st.file_uploader("🏢 Internal Delivery Properties (CSV)", type=["csv"])
-    company_remove_csv = st.file_uploader("🚫 Properties to Remove (CSV)", type=["csv"])
+st.subheader("Step 2: Provide Google Drive Folder Link")
+google_drive_link = st.text_input("Paste Google Drive folder link containing RDN files:")
 
-    st.header("Google Drive Folder ID")
-    folder_id = st.text_input("🔗 Enter Google Drive Folder ID")
+if st.button("Process Data"):
+    if all([devzones_gpkg, lat_lon_csv, company_internal_csv, company_remove_csv, google_drive_link]):
+        # Load the uploaded files
+        sf_zones, lat_lon_data, company_internal_data, company_remove_data = load_files(
+            devzones_gpkg, lat_lon_csv, company_internal_csv, company_remove_csv
+        )
 
-    st.info("Ensure that the folder is shared with the service account.")
+        # Download RDN files from Google Drive
+        st.write("Downloading RDN files from Google Drive...")
+        download_dir = download_google_drive_folder(google_drive_link)
 
-# Process button centered in the main layout
-col1, col2, col3 = st.columns([1, 2, 1])
-with col2:
-    if st.button("🚀 Process Data"):
-        if all([devzones_gpkg, lat_lon_csv, company_internal_csv, company_remove_csv, folder_id]):
-            # Authenticate with Google Drive
-            with st.spinner("Authenticating with Google Drive..."):
-                drive = authenticate_drive()
-                if not drive:
-                    st.stop()
+        # Process the data
+        st.write("Processing data... Please wait.")
+        processed_data = process_data(sf_zones, lat_lon_data, company_remove_data)
 
-            # Load uploaded files into dataframes
-            sf_zones = gpd.read_file(devzones_gpkg).rename(columns={"Delivery.Zone": "Distr_code"}).to_crs(4326)
-            lat_lon_data = pd.read_csv(lat_lon_csv)
-            company_remove_data = pd.read_csv(company_remove_csv)
+        # Sort files into grouped folders
+        st.write("Sorting files into group folders...")
+        grouped_dir = sort_files_into_folders(processed_data, download_dir)
 
-            # Process the data
-            st.write("🔄 Processing data... Please wait.")
-            processed_data = process_data(sf_zones, lat_lon_data, company_remove_data)
+        # Zip the grouped folders for download
+        zip_buffer = zip_grouped_folders(grouped_dir)
 
-            # List RDN files in the Google Drive folder
-            st.write("📂 Organizing RDN files on Google Drive...")
-            rdn_files = list_drive_files(drive, folder_id)
-
-            # Create grouped folders and move files
-            for _, row in processed_data.iterrows():
-                zone_folder_id = create_drive_folder(drive, folder_id, row["Distr_code"])
-                rdn_filename = f"{row['property_code_assigned']}.pdf"
-
-                if rdn_filename in rdn_files:
-                    move_file_to_folder(drive, rdn_files[rdn_filename], zone_folder_id)
-
-            st.success("🎉 Processing completed! Your RDN files are organized.")
-            st.write(f"👉 [Access your organized folder on Google Drive](https://drive.google.com/drive/folders/{folder_id})")
-        else:
-            st.warning("⚠️ Please upload all required files and provide the Google Drive folder ID.")
-
-# Footer with a subtle copyright message
-st.markdown(
-    """
-    <hr style="border:1px solid #FF4B4B;">
-    <p style="text-align: center;">Copyright © 2024 MOPTAX RDN Delivery. All rights reserved.</p>
-    """, 
-    unsafe_allow_html=True
-)
+        # Provide a download button for the zipped grouped folders
+        st.success("Processing completed! Download your grouped files below.")
+        st.download_button(
+            label="Download Grouped Files (ZIP)",
+            data=zip_buffer,
+            file_name="grouped_files.zip",
+            mime="application/zip"
+        )
+    else:
+        st.warning("Please upload all required files and provide the Google Drive link.")
